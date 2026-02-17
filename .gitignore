@@ -1,2 +1,8 @@
 *files/
 *data/
+*fau*
+1.ipynb
+plots/
+.venv
+*pycache*
+*archive*/
