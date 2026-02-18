@@ -357,6 +357,7 @@ def batch_join(
     out_dir: str,
     merged_glob: str = "*_merged_64hz.csv",
     time_window_csv: str | None = None,
+    max_snap_s: Optional[float] = None,
 ):
     os.makedirs(out_dir, exist_ok=True)
 
@@ -392,6 +393,7 @@ def batch_join(
             keep_action=False,
             subject_id=subject_id,
             time_window_csv=time_window_csv,
+            max_snap_s=max_snap_s,
         )
 
 
