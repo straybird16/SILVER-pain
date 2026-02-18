@@ -6,3 +6,4 @@ plots/
 .venv
 *pycache*
 *archive*/
+*.feather
