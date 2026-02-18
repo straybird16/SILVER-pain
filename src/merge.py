@@ -1,56 +1,74 @@
-"""src.merge
-
-Utilities for aligning (snapping) sparse self-report labels to regularly sampled
-physiological time series.
-
-The core operation is nearest-neighbor snapping of label timestamps onto an
-existing `timestamp_ns` grid (typically produced by `src.preprocessing`).
-
-Supported self-report formats
------------------------------
-1) Headered CSV (older cohort convention)
-   Required columns:
-     - timestamp   : local time (America/New_York by default), e.g. "2025-03-12 09:22:46.505"
-     - PainLevel   : numeric
-   Optional columns:
-     - Trial, Action
-
-2) Headerless CSV (young cohort convention: pain_data.csv)
-   No header; rows are:
-     local_timestamp, pain_level, subject_id
-   Example:
-     2024-07-08 13:13:39.609319,5,101
-
-All timestamps are interpreted as local time (configurable) and converted to UTC.
+"""
+    Functions that merge differnt channels in original files or extraction from original files to a single .csv file per subject
+    
 """
 
-from __future__ import annotations
 
-import glob
 import os
-from typing import Iterable, Optional, Tuple
-
+import glob
 import numpy as np
 import pandas as pd
+from typing import Iterable, Optional, Tuple
+
+
+def _infer_epoch_unit(values: pd.Series) -> str:
+    """Infer epoch unit for numeric timestamps.
+
+    Heuristic based on magnitude:
+      - ns: ~1e18
+      - us: ~1e15
+      - ms: ~1e12
+      - s : ~1e9 or smaller
+
+    Returns one of: {"s", "ms", "us", "ns"}.
+    """
+    v = pd.to_numeric(values, errors="coerce")
+    if v.notna().sum() == 0:
+        return "ns"
+    m = float(np.nanmedian(np.abs(v.to_numpy(dtype=np.float64))))
+    if m >= 1e17:
+        return "ns"
+    if m >= 1e14:
+        return "us"
+    if m >= 1e11:
+        return "ms"
+    return "s"
+
+
+def _to_utc_datetime(values: pd.Series, tz_local: str = "America/New_York") -> pd.Series:
+    """Convert a timestamp series to tz-aware UTC datetimes using pandas-native conversion.
+
+    Supported inputs:
+      - datetime-like strings (interpreted as local time in tz_local unless they carry tz info)
+      - numeric epoch timestamps (unit inferred via _infer_epoch_unit; interpreted as UTC)
+
+    Returns a tz-aware datetime Series in UTC.
+    """
+    if np.issubdtype(values.dtype, np.datetime64):
+        return pd.to_datetime(values, errors="coerce", utc=True)
+
+    # Detect numeric epoch-like input (including strings of digits).
+    v_num = pd.to_numeric(values, errors="coerce")
+    if v_num.notna().sum() > 0 and v_num.notna().mean() > 0.8:
+        unit = _infer_epoch_unit(v_num)
+        return pd.to_datetime(v_num, unit=unit, utc=True, errors="coerce")
+
+    # Otherwise parse as local wall-clock time and convert to UTC.
+    t_local = pd.to_datetime(values, errors="coerce")
+    return (t_local
+            .dt.tz_localize(tz_local, ambiguous="infer", nonexistent="shift_forward")
+            .dt.tz_convert("UTC"))
+
 
 
 def _nearest_index(target_ns: np.ndarray, grid_ns: np.ndarray) -> np.ndarray:
-    """Return the nearest index in `grid_ns` for each value in `target_ns`."""
     idx = np.searchsorted(grid_ns, target_ns, side="left")
     idx0 = np.clip(idx - 1, 0, grid_ns.size - 1)
-    idx1 = np.clip(idx, 0, grid_ns.size - 1)
+    idx1 = np.clip(idx,     0, grid_ns.size - 1)
 
     d0 = np.abs(target_ns - grid_ns[idx0])
     d1 = np.abs(target_ns - grid_ns[idx1])
     return np.where(d1 < d0, idx1, idx0)
-
-
-def _nearest_index_with_distance(target_ns: np.ndarray, grid_ns: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Return (nearest_idx, distance_ns) for each `target_ns`."""
-    idx = _nearest_index(target_ns, grid_ns)
-    dist = np.abs(target_ns - grid_ns[idx])
-    return idx, dist
-
 
 def _coerce_timestamp_utc(ts: pd.Series, tz_local: str) -> pd.Series:
     """
@@ -66,7 +84,6 @@ def _coerce_timestamp_utc(ts: pd.Series, tz_local: str) -> pd.Series:
         t.dt.tz_localize(tz_local, ambiguous="infer", nonexistent="shift_forward")
         .dt.tz_convert("UTC")
     )
-
 
 def _canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -106,18 +123,27 @@ def _canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-
 def load_self_report(self_report_csv: str, tz_local: str = "America/New_York") -> pd.DataFrame:
-    """
-    Load a self-report file and standardize it for time alignment.
+    """Load a self-report CSV and normalize timestamps to UTC.
 
-    Returns a DataFrame with at least:
-      - timestamp_utc (tz-aware)
-      - timestamp_ns  (int64 ns since epoch)
-      - PainLevel     (float, may contain NaN)
+    The function accepts either:
+      1) local wall-clock timestamps (e.g., 'YYYY-MM-DD HH:MM:SS.sss' in America/New_York), or
+      2) numeric epoch timestamps (seconds/ms/us/ns; unit inferred), interpreted as UTC.
 
-    Trial/Action columns are preserved if present.
+    Output columns:
+      - timestamp_utc: tz-aware UTC datetime
+      - other original columns are preserved
     """
+    """ sr = pd.read_csv(self_report_csv)
+
+    if "timestamp" not in sr.columns:
+        raise ValueError(f"{self_report_csv} missing required column: 'timestamp'")
+
+    sr["timestamp_utc"] = _to_utc_datetime(sr["timestamp"])
+
+    if "Trial" in sr.columns:
+        trial_num = pd.to_numeric(sr["Trial"], errors="coerce")
+        sr["Trial"] = trial_num.ffill().bfill().astype(int) """
     if not os.path.isfile(self_report_csv):
         raise FileNotFoundError(self_report_csv)
 
@@ -142,13 +168,15 @@ def load_self_report(self_report_csv: str, tz_local: str = "America/New_York") -
 
     sr["PainLevel"] = pd.to_numeric(sr["PainLevel"], errors="coerce")
     sr["timestamp_utc"] = _coerce_timestamp_utc(sr["timestamp"], tz_local=tz_local)
-    sr["timestamp_ns"] = sr["timestamp_utc"].astype("int64")
+    #sr["timestamp_ns"] = sr["timestamp_utc"].astype("int64")
 
     if "Trial" in sr.columns:
         trial_num = pd.to_numeric(sr["Trial"], errors="coerce")
         sr["Trial"] = trial_num.ffill().bfill().round().astype("Int32")
 
     return sr
+
+
 
 
 def _norm_subject_id(x) -> str:
@@ -159,14 +187,22 @@ def _norm_subject_id(x) -> str:
 
 def load_subject_time_windows(time_window_csv: str, tz_local: str = "America/New_York") -> pd.DataFrame:
     """
-    Load per-subject experiment windows used for optional filtering.
-
-    Expected CSV format:
+    Reads a CSV like:
       subject,start,end
-      (001,YYYY-MM-DD HH:MM:SS.***,YYYY-MM-DD HH:MM:SS.***)
+      001,YYYY-MM-DD HH:MM:SS.***,YYYY-MM-DD HH:MM:SS.***
+    or:
+      subject,start,end
+      101,MM/DD/YYYY  HH:MM:SS PM,MM/DD/YYYY  HH:MM:SS PM 
+    (BY DEFAULT MONTH FIRST)
 
-    Parsing is done with `pd.to_datetime(errors="coerce")` and interpreted as
-    naive local time in `tz_local`.
+    Behavior:
+      - Parse start/end with pd.to_datetime(errors="coerce") (handles both formats in your examples)
+      - Interpret as tz_local (naive local times) then convert to UTC
+      - Drop rows where start/end are invalid datetimes
+      - Ensure start <= end
+      
+    Returns tz-aware UTC datetimes.
+    Output columns: subject_norm, start_utc, end_utc
     """
     w = pd.read_csv(time_window_csv, dtype={"subject": str})
 
@@ -175,21 +211,22 @@ def load_subject_time_windows(time_window_csv: str, tz_local: str = "America/New
         return pd.DataFrame(columns=["subject_norm", "start_utc", "end_utc"])
 
     start_local = pd.to_datetime(w["start"], errors="coerce")
-    end_local = pd.to_datetime(w["end"], errors="coerce")
+    end_local   = pd.to_datetime(w["end"],   errors="coerce")
 
-    start_utc = (
-        start_local.dt.tz_localize(tz_local, ambiguous="infer", nonexistent="shift_forward")
-        .dt.tz_convert("UTC")
-    )
-    end_utc = (
-        end_local.dt.tz_localize(tz_local, ambiguous="infer", nonexistent="shift_forward")
-        .dt.tz_convert("UTC")
-    )
+    start_utc = (start_local
+                 .dt.tz_localize(tz_local, ambiguous="infer", nonexistent="shift_forward")
+                 .dt.tz_convert("UTC"))
+    end_utc = (end_local
+               .dt.tz_localize(tz_local, ambiguous="infer", nonexistent="shift_forward")
+               .dt.tz_convert("UTC"))
 
-    out = pd.DataFrame(
-        {"subject_norm": w["subject"].map(_norm_subject_id), "start_utc": start_utc, "end_utc": end_utc}
-    )
+    out = pd.DataFrame({
+        "subject_norm": w["subject"].map(_norm_subject_id),
+        "start_utc": start_utc,
+        "end_utc": end_utc,
+    })
 
+    # keep only valid
     out = out[out["start_utc"].notna() & out["end_utc"].notna()].copy()
     if out.empty:
         return out
@@ -198,7 +235,7 @@ def load_subject_time_windows(time_window_csv: str, tz_local: str = "America/New
     s = out["start_utc"].to_numpy()
     e = out["end_utc"].to_numpy()
     out["start_utc"] = np.minimum(s, e)
-    out["end_utc"] = np.maximum(s, e)
+    out["end_utc"]   = np.maximum(s, e)
 
     return out[["subject_norm", "start_utc", "end_utc"]]
 
@@ -208,50 +245,34 @@ def join_self_report_to_physio(
     self_report_csv: str,
     out_csv: str,
     keep_action: bool = False,
-    subject_id: Optional[str] = None,
-    time_window_csv: Optional[str] = None,
+    subject_id: str | None = None,
+    time_window_csv: str | None = None,
     tz_local: str = "America/New_York",
     max_snap_s: Optional[float] = None,
 ) -> pd.DataFrame:
-    """
-    Snap self-report labels onto a physiological time series.
-
-    Parameters
-    ----------
-    physio_csv:
-        Path to a merged physiological CSV that contains `timestamp_ns`.
-    self_report_csv:
-        Path to a self-report CSV. See module docstring for supported formats.
-    out_csv:
-        Output CSV path.
-    keep_action:
-        If True and Action exists in the self-report, include it in the output.
-    subject_id, time_window_csv:
-        Optional experiment-window filtering. If provided, physiological rows outside
-        the subject windows are dropped before snapping; self-report rows are also filtered.
-    tz_local:
-        Local timezone for interpreting self-report timestamps when they are naive.
-    max_snap_s:
-        If provided, ignore self-report rows whose nearest grid point is farther than this threshold.
-
-    Returns
-    -------
-    pd.DataFrame
-        The aligned DataFrame written to `out_csv`.
-    """
     df = pd.read_csv(physio_csv)
     if "timestamp_ns" not in df.columns:
-        raise ValueError(f"{physio_csv} is missing required column 'timestamp_ns'")
+        raise ValueError(f"{physio_csv} missing timestamp_ns")
 
-    df["timestamp_ns"] = df["timestamp_ns"].astype("int64")
-    df = df.sort_values("timestamp_ns", kind="mergesort").reset_index(drop=True)
+    # Parse physio timestamps as tz-aware UTC using pandas-native conversion.
+    # The 'timestamp_ns' column is expected to be an epoch timestamp (ns/us/ms/s),
+    # but we infer the unit to avoid silent unit-mismatch bugs.
+    ts_num = pd.to_numeric(df["timestamp_ns"], errors="coerce")
+    if ts_num.notna().sum() > 0 and ts_num.notna().mean() > 0.8:
+        unit = _infer_epoch_unit(ts_num)
+        df_ts_utc = pd.to_datetime(ts_num, unit=unit, utc=True, errors="coerce")
+    else:
+        # Fallback: treat as datetime-like strings. We assume these are already UTC.
+        df_ts_utc = pd.to_datetime(df["timestamp_ns"], utc=True, errors="coerce")
 
-    # Build tz-aware UTC timestamps for window filtering (pandas-native comparisons)
-    df_ts_utc = pd.to_datetime(df["timestamp_ns"], unit="ns", utc=True)
+    # Sort by time for stable downstream operations (window filtering + nearest snapping).
+    df["_ts_utc"] = df_ts_utc
+    df = df.sort_values("_ts_utc", kind="mergesort").reset_index(drop=True)
+    df_ts_utc = df.pop("_ts_utc")
 
     win_sub = None
     if time_window_csv and subject_id is not None:
-        win = load_subject_time_windows(time_window_csv, tz_local=tz_local)
+        win = load_subject_time_windows(time_window_csv)
         if not win.empty:
             sid_norm = _norm_subject_id(subject_id)
             win_sub = win[win["subject_norm"] == sid_norm].copy()
@@ -262,65 +283,70 @@ def join_self_report_to_physio(
                 df = df.loc[mask].copy().reset_index(drop=True)
                 df_ts_utc = df_ts_utc.loc[mask].reset_index(drop=True)
 
-    # Ensure expected columns exist even if empty after filtering.
-    if "PainLevel" not in df.columns:
-        df["PainLevel"] = np.nan
-    if "Trial" not in df.columns:
-        df["Trial"] = pd.Series(dtype="Int32")
-    if keep_action and "Action" not in df.columns:
-        df["Action"] = np.nan
-
+    # If filtering removed everything, still write an empty file with headers.
     if df.empty:
+        if "PainLevel" not in df.columns:
+            df["PainLevel"] = np.nan
+        if "Trial" not in df.columns:
+            df["Trial"] = pd.Series(dtype="Int32")
+        if keep_action and "Action" not in df.columns:
+            df["Action"] = np.nan
         os.makedirs(os.path.dirname(out_csv), exist_ok=True)
         df.to_csv(out_csv, index=False)
         return df
 
-    grid_ns = df["timestamp_ns"].to_numpy(dtype=np.int64)
+    sr = load_self_report(self_report_csv, tz_local)
 
-    sr = load_self_report(self_report_csv, tz_local=tz_local)
-
-    # Window filter for self-report as well (uses timestamp_utc).
+    # If we filtered physio by windows, also filter SR by the same windows (using timestamp_utc)
     if win_sub is not None and not win_sub.empty and not sr.empty:
         sr_mask = np.zeros(len(sr), dtype=bool)
         for s, e in win_sub[["start_utc", "end_utc"]].itertuples(index=False, name=None):
             sr_mask |= (sr["timestamp_utc"] >= s) & (sr["timestamp_utc"] <= e)
         sr = sr.loc[sr_mask].copy()
 
+    # Drop invalid timestamps before alignment.
+    if not sr.empty:
+        sr = sr[sr["timestamp_utc"].notna()].copy()
+
     if sr.empty:
+        if "PainLevel" not in df.columns:
+            df["PainLevel"] = np.nan
+        if "Trial" not in df.columns:
+            df["Trial"] = pd.Series(dtype="Int32")
+        if keep_action and "Action" not in df.columns:
+            df["Action"] = np.nan
         os.makedirs(os.path.dirname(out_csv), exist_ok=True)
         df.to_csv(out_csv, index=False)
         return df
 
-    target_ns = sr["timestamp_ns"].to_numpy(dtype=np.int64)
+    # Snap each self-report row to the nearest physio timestamp using pandas-native datetime alignment.
+    # This avoids any dependence on integer epoch units (ns/us/ms) and prevents unit mismatch.
+    grid = pd.DatetimeIndex(df_ts_utc)
+    targets = pd.DatetimeIndex(sr["timestamp_utc"])
+    if max_snap_s is not None: max_snap_s = pd.Timedelta(seconds=max_snap_s) #type:ignore
+    nearest_idx = grid.get_indexer(targets, method="nearest", tolerance=max_snap_s)
+    valid = nearest_idx >= 0
+    nearest_idx = nearest_idx[valid]
+    sr_aligned = sr.iloc[np.flatnonzero(valid)].copy()
 
-    if max_snap_s is None:
-        idx = _nearest_index(target_ns, grid_ns)
-        keep_mask = None
-    else:
-        idx, dist_ns = _nearest_index_with_distance(target_ns, grid_ns)
-        keep_mask = (dist_ns.astype(np.float64) / 1e9) <= float(max_snap_s)
-        idx = idx[keep_mask]
+    if "PainLevel" not in df.columns:
+        df["PainLevel"] = np.nan
+    if "Trial" not in df.columns:
+        df["Trial"] = np.nan
+    if keep_action and "Action" not in df.columns:
+        df["Action"] = np.nan
 
-    if idx.size == 0:
-        os.makedirs(os.path.dirname(out_csv), exist_ok=True)
-        df.to_csv(out_csv, index=False)
-        return df
-
-    if keep_mask is not None:
-        sr2 = sr.iloc[np.where(keep_mask)[0]].copy()
-    else:
-        sr2 = sr
-
-    df.loc[idx, "PainLevel"] = sr2["PainLevel"].to_numpy(dtype=np.float64)
-
-    if "Trial" in sr2.columns:
-        df.loc[idx, "Trial"] = sr2["Trial"].to_numpy()
-        df["Trial"] = pd.to_numeric(df["Trial"], errors="coerce").ffill().bfill().round().astype("Int32")
-
-    if keep_action and "Action" in sr2.columns:
-        df.loc[idx, "Action"] = sr2["Action"].to_numpy()
+    df.loc[nearest_idx, "PainLevel"] = sr_aligned["PainLevel"].to_numpy()
+    if "Trial" in sr_aligned.columns:
+        df.loc[nearest_idx, "Trial"] = sr_aligned["Trial"].to_numpy()
+    if keep_action and "Action" in sr_aligned.columns:
+        df.loc[nearest_idx, "Action"] = sr_aligned["Action"].to_numpy()
 
     os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+
+    df["Trial"] = pd.to_numeric(df["Trial"], errors="coerce").ffill().bfill()
+    df["Trial"] = df["Trial"].round().astype("Int32")
+
     df.to_csv(out_csv, index=False)
     return df
 
@@ -330,17 +356,8 @@ def batch_join(
     self_report_dir: str,
     out_dir: str,
     merged_glob: str = "*_merged_64hz.csv",
-    time_window_csv: Optional[str] = None,
-    tz_local: str = "America/New_York",
-    max_snap_s: Optional[float] = None,
-) -> None:
-    """
-    Batch join for directory layouts where self-reports are stored in a separate folder.
-
-    This is used by the older cohort pipeline:
-      merged_dir/001_merged_64hz.csv
-      self_report_dir/001.csv
-    """
+    time_window_csv: str | None = None,
+):
     os.makedirs(out_dir, exist_ok=True)
 
     merged_paths = sorted(glob.glob(os.path.join(merged_dir, merged_glob)))
@@ -362,7 +379,7 @@ def batch_join(
             sr_path = fallback[0] if fallback else None
 
         if sr_path is None:
-            print(f"[WARN] No self report for subject {subject_id}; skipping")
+            print(f"[WARN] no self report for subject {subject_id}; skipping")
             continue
 
         out_path = os.path.join(out_dir, f"{subject_id}_merged_64hz_with_self_report.csv")
@@ -375,9 +392,8 @@ def batch_join(
             keep_action=False,
             subject_id=subject_id,
             time_window_csv=time_window_csv,
-            tz_local=tz_local,
-            max_snap_s=max_snap_s,
         )
+
 
 
 def batch_join_subject_folders(

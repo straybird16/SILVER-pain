@@ -55,7 +55,7 @@ class MergeConfig:
     
     # Pain/self-report time zone (pain_data.csv uses local ET)
     pain_tz: str = "America/New_York"
-    pain_max_snap_s: float = 0.25          # <=0 means no max; otherwise ignore if farther than this
+    pain_max_snap_s: Optional[float] = 1          # None means no max; otherwise ignore if farther than this
 
     # Default to lowpass on HR after resampling to 64 Hz (Nyquist = 32 Hz)
     hr_bp_low_hz: float = 0.0
