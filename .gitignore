@@ -7,3 +7,4 @@ plots/
 *pycache*
 *archive*/
 *.feather
+*.DS_Store*
