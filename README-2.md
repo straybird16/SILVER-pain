@@ -4,8 +4,7 @@ Persistent and chronic pain has been shown to be strongly associated with risks 
 
 The SILVER (Senior Inclusive Laboratory Video and Empatica Recordings of) Pain Dataset is a multi-modal pain assessment dataset consisting of recordings of videos and physiological signals of 25 subjects (**18** **young** + **7 old**) on their responses to experimental pain with real-time self annotation of pain level.
 
-![1771521848993](https://file+.vscode-resource.vscode-cdn.net/Users/xxd/Documents/PhD/PainAssessment/SILVER-Pain%20Dataset/image/README-2/1771521848993.png)
-
+![sample_signal_with_pain_overlay](assets/figures/sample_signal_with_pain_overlay.png)
 
 ---
 
