@@ -1,3 +1,23 @@
+"""
+src.extraction
+
+Utilities to parse Empatica EmbracePlus raw exports (Avro) and write per-channel CSV files.
+
+Why this exists:
+- EmbracePlus exports can contain multiple channels and multiple segments.
+- Converting to simple per-channel CSVs makes inspection and downstream processing reproducible.
+
+Output convention:
+- Each channel CSV includes:
+  - timestamp_ns: epoch nanoseconds (UTC)
+  - segment: integer segment id (continuous chunks in the export)
+  - value columns (e.g., `value` for scalar channels or `x,y,z` for vector channels)
+
+Main entry points:
+- parse_folder_to_channel_dfs(...)
+- write_channel_csvs(...)
+"""
+
 import os
 import glob
 import numpy as np
@@ -97,7 +117,7 @@ def iter_avro_records(avro_path: str):
 
 
 # ----------------------------
-# Part 1 (DONE): parse folder -> per-channel DataFrames (with segment id)
+# parse folder -> per-channel DataFrames (with segment id)
 # ----------------------------
 def parse_folder_to_channel_dfs(folder: str, keys=None):
     """
@@ -159,6 +179,22 @@ def parse_folder_to_channel_dfs(folder: str, keys=None):
 
 
 def write_channel_csvs(channel_dfs: dict, out_dir: str, prefix: str):
+    """
+    Write extracted channel DataFrames to CSV files.
+
+    Parameters
+    ----------
+    channel_dfs:
+        Dict of {channel_name: DataFrame}. Typically the output of parse_folder_to_channel_dfs().
+    out_dir:
+        Output directory (created if missing).
+    prefix:
+        Filename prefix (usually the subject id, e.g., "001").
+
+    Writes
+    ------
+    <out_dir>/<prefix>_<channel>.csv for each channel in channel_dfs.
+    """
     os.makedirs(out_dir, exist_ok=True)
     for k, df in channel_dfs.items():
         out_path = os.path.join(out_dir, f"{prefix}_{k}.csv")

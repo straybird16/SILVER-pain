@@ -37,6 +37,29 @@ except Exception:
 # ----------------------------
 @dataclass
 class MergeConfig:
+    """
+    Configuration for aligning physiological channels onto a common time grid.
+
+    The pipeline uses a BVP-native 64 Hz grid as the master timeline, then maps
+    EDA/TEMP and HR onto that grid.
+
+    Key concepts
+    ------------
+    - map_method:
+        "snap" copies nearest sample (robust, preserves measured values)
+        "interp" interpolates between samples (smoother, more assumptions)
+    - gap_threshold_s:
+        If consecutive segments are separated by <= this many seconds, they can
+        be stitched into the same "section".
+    - hr_target:
+        Controls whether HR is treated as 1 Hz (then broadcast to 64 Hz) or fully
+        interpolated to 64 Hz.
+
+    Outputs
+    -------
+    Merged DataFrames include:
+    timestamp_ns (UTC), datetime_utc, segment, section, bvp, eda, temperature, hr
+    """
     # EDA/TEMP mapping onto BVP grid
     map_method: str = "snap"         # "snap" or "interp"
     map_interp_kind: str = "linear"  # for EDA/TEMP if map_method="interp"

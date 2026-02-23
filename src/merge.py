@@ -1,6 +1,16 @@
 """
-    Functions that merge differnt channels in original files or extraction from original files to a single .csv file per subject
-    
+src.merge
+
+Utilities to merge self-report pain annotations with merged physiological time series.
+
+Core behavior:
+- Parse self-report timestamps (either local wall-clock time or numeric epoch time)
+- Convert self-report timestamps to UTC
+- Snap each self-report row to the nearest physiological timestamp
+  (optionally enforcing a maximum snapping tolerance)
+
+This module is intentionally conservative about timestamp handling and relies on
+pandas datetime alignment to avoid ns/us/ms unit mismatch bugs.
 """
 
 
@@ -134,16 +144,6 @@ def load_self_report(self_report_csv: str, tz_local: str = "America/New_York") -
       - timestamp_utc: tz-aware UTC datetime
       - other original columns are preserved
     """
-    """ sr = pd.read_csv(self_report_csv)
-
-    if "timestamp" not in sr.columns:
-        raise ValueError(f"{self_report_csv} missing required column: 'timestamp'")
-
-    sr["timestamp_utc"] = _to_utc_datetime(sr["timestamp"])
-
-    if "Trial" in sr.columns:
-        trial_num = pd.to_numeric(sr["Trial"], errors="coerce")
-        sr["Trial"] = trial_num.ffill().bfill().astype(int) """
     if not os.path.isfile(self_report_csv):
         raise FileNotFoundError(self_report_csv)
 
@@ -175,8 +175,6 @@ def load_self_report(self_report_csv: str, tz_local: str = "America/New_York") -
         sr["Trial"] = trial_num.ffill().bfill().round().astype("Int32")
 
     return sr
-
-
 
 
 def _norm_subject_id(x) -> str:
@@ -250,6 +248,27 @@ def join_self_report_to_physio(
     tz_local: str = "America/New_York",
     max_snap_s: Optional[float] = None,
 ) -> pd.DataFrame:
+    """
+    Join a self-report CSV to a merged physiological CSV by nearest timestamp.
+
+    Parameters
+    ----------
+    physio_csv:
+        Merged physiology CSV containing `timestamp_ns` (epoch time; unit inferred).
+    self_report_csv:
+        Self-report CSV. Can be headered or headerless.
+    out_csv:
+        Output path.
+    tz_local:
+        Time zone used when self-report timestamps are local wall-clock strings.
+    max_snap_s:
+        If set, ignore self-report rows farther than this many seconds from the nearest physio time.
+
+    Notes
+    -----
+    - Snapping is done with pandas DatetimeIndex.get_indexer(method="nearest"),
+      which avoids integer timestamp unit mismatch.
+    """
     df = pd.read_csv(physio_csv)
     if "timestamp_ns" not in df.columns:
         raise ValueError(f"{physio_csv} missing timestamp_ns")
