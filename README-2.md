@@ -26,7 +26,7 @@ The SILVER (Senior Inclusive Laboratory Video and Empatica Recordings of) Pain D
 
 ## What’s inside
 
-The SILVER-Pain Dataset is designed to support research on **automatic pain assessment**, with an inclusion on **older adults** and **privacy-preserving sensing**. 
+The SILVER-Pain Dataset is designed to support research on **automatic pain assessment**, with an inclusion on **older adults** and **privacy-preserving sensing**.
 
 Physiological signals in the young cohort were collected with the Empatica E4 wristband. Those from the older cohort was collected with the newer Empatica EmbracePlus wristband (which is, according to Empatica, a updated version of E4 after E4 was sunset).
 
@@ -145,6 +145,13 @@ Because repo layouts vary across labs, we **do not** hard-code a fixed pipeline 
 ```python
 ...
 ```
+
+## AI assistance
+
+**Parts of this repository were developed with AI assistance. AI tools were used for tasks such as code drafting, refactoring suggestions, documentation, and prototype generation. All AI-assisted code was reviewed, and tested by the authors before inclusion in this repository.
+The authors are responsible for the final contents.**
+
+## References
 
 [^1]: Mills, S. E., Nicolson, K. P., & Smith, B. H. (2019). Chronic pain: a review of its epidemiology and associated factors in population-based studies. *British journal of anaesthesia* , *123* (2), e273-e283.
     
