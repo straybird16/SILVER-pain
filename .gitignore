@@ -1,10 +1,17 @@
+# data files should be ignored; only data compiling codes are included in the repo
 *files/
 *data/
 *fau*
-1.ipynb
-plots/
-.venv
-*pycache*
-*archive*/
+*adrd*
 *.feather
+# testing scripts
+1.ipynb
+# intermediate results
+plots/
+# virtual environment
+.venv
+# local config fils
+*pycache*
 *.DS_Store*
+# archived files and miscellany
+*archive*/
