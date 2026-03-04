@@ -1,25 +1,9 @@
-"""
-src.extraction
-
-Utilities to parse Empatica EmbracePlus raw exports (Avro) and write per-channel CSV files.
-
-Why this exists:
-- EmbracePlus exports can contain multiple channels and multiple segments.
-- Converting to simple per-channel CSVs makes inspection and downstream processing reproducible.
-
-Output convention:
-- Each channel CSV includes:
-  - timestamp_ns: epoch nanoseconds (UTC)
-  - segment: integer segment id (continuous chunks in the export)
-  - value columns (e.g., `value` for scalar channels or `x,y,z` for vector channels)
-
-Main entry points:
-- parse_folder_to_channel_dfs(...)
-- write_channel_csvs(...)
-"""
+"""Parse Empatica EmbracePlus AVRO exports into per-channel CSV-friendly frames."""
 
 import os
 import glob
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
@@ -31,11 +15,7 @@ from avro.io import DatumReader
 # helpers: time unit + parsing
 # ----------------------------
 def to_epoch_ns(ts: int) -> int:
-    """
-    Heuristic conversion to epoch nanoseconds.
-      - peaksTimeNanos: nanoseconds (≈1e18)
-      - timestampStart: often microseconds (≈1e15)
-    """
+    """Convert integer epoch timestamp to nanoseconds via magnitude heuristic."""
     ts = int(ts)
     if ts >= 10**17:      # ns
         return ts
@@ -46,12 +26,8 @@ def to_epoch_ns(ts: int) -> int:
     return ts * 1_000_000_000  # seconds
 
 
-def segment_to_df(seg: dict, signal_name: str, segment_id: int) -> pd.DataFrame:
-    """
-    Convert a sampled segment dict:
-      {'timestampStart': ..., 'samplingFrequency': ..., 'values': [...]}
-    into DataFrame with timestamp_ns + signal columns + segment.
-    """
+def segment_to_df(seg: dict[str, Any], signal_name: str, segment_id: int) -> pd.DataFrame:
+    """Convert one sampled segment payload into a DataFrame."""
     ts0_ns = to_epoch_ns(seg["timestampStart"])
     fs = float(seg["samplingFrequency"])
     values = seg.get("values", [])
@@ -92,10 +68,8 @@ def segment_to_df(seg: dict, signal_name: str, segment_id: int) -> pd.DataFrame:
     return df
 
 
-def peaks_to_df(peaks_time_nanos, segment_id: int) -> pd.DataFrame:
-    """
-    Convert peaksTimeNanos list into DataFrame with timestamp_ns + peak flag + segment.
-    """
+def peaks_to_df(peaks_time_nanos: list[int], segment_id: int) -> pd.DataFrame:
+    """Convert a `peaksTimeNanos` list to timestamp/segment rows."""
     if not peaks_time_nanos:
         return pd.DataFrame(columns=["timestamp_ns", "segment", "peak"])
     t_ns = np.asarray(peaks_time_nanos, dtype=np.int64)
@@ -105,7 +79,7 @@ def peaks_to_df(peaks_time_nanos, segment_id: int) -> pd.DataFrame:
 
 
 def iter_avro_records(avro_path: str):
-    """Yield each record in the avro file (don’t assume only one)."""
+    """Yield all records from one AVRO file."""
     reader = None
     try:
         reader = DataFileReader(open(avro_path, "rb"), DatumReader())
@@ -119,10 +93,27 @@ def iter_avro_records(avro_path: str):
 # ----------------------------
 # parse folder -> per-channel DataFrames (with segment id)
 # ----------------------------
-def parse_folder_to_channel_dfs(folder: str, keys=None):
-    """
-    Returns: dict(signal_name -> DataFrame)
-    Each DF has: timestamp_ns, datetime_utc, segment, and signal columns.
+def parse_folder_to_channel_dfs(
+    folder: str,
+    keys: list[str] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Parse all `.avro` files in a folder into channel DataFrames.
+
+    Parameters
+    ----------
+    folder
+        Directory containing EmbracePlus AVRO segment files.
+    keys
+        Channel keys expected under each record's `rawData`. Defaults to
+        `["accelerometer", "eda", "temperature", "bvp", "systolicPeaks"]`.
+
+    Returns
+    -------
+    dict[str, pandas.DataFrame]
+        A mapping of channel key to DataFrame. Each output DataFrame includes
+        `timestamp_ns`, `datetime_utc`, and `segment` plus value columns.
+        Duplicate timestamps are resolved by keeping the last row after sorting
+        by (`timestamp_ns`, `segment`).
     """
     if keys is None:
         keys = ["accelerometer", "eda", "temperature", "bvp", "systolicPeaks"]
@@ -178,44 +169,10 @@ def parse_folder_to_channel_dfs(folder: str, keys=None):
     return out
 
 
-def write_channel_csvs(channel_dfs: dict, out_dir: str, prefix: str):
-    """
-    Write extracted channel DataFrames to CSV files.
-
-    Parameters
-    ----------
-    channel_dfs:
-        Dict of {channel_name: DataFrame}. Typically the output of parse_folder_to_channel_dfs().
-    out_dir:
-        Output directory (created if missing).
-    prefix:
-        Filename prefix (usually the subject id, e.g., "001").
-
-    Writes
-    ------
-    <out_dir>/<prefix>_<channel>.csv for each channel in channel_dfs.
-    """
+def write_channel_csvs(channel_dfs: dict[str, pd.DataFrame], out_dir: str, prefix: str) -> None:
+    """Write parsed channel frames to `<prefix>_<channel>.csv` files."""
     os.makedirs(out_dir, exist_ok=True)
     for k, df in channel_dfs.items():
         out_path = os.path.join(out_dir, f"{prefix}_{k}.csv")
         df.to_csv(out_path, index=False)
         print(f"[OK] wrote {k}: {out_path} ({len(df)} rows)")
-
-""" 
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("folder", default='./original_files/physiological_signal', help="Folder containing .avro files for ONE subject")
-    parser.add_argument("--out_dir", default="./extraction_from_original_files", help="Where to write CSVs")
-    args = parser.parse_args()
-
-    for subject_id in range(1, 8):
-        write_channel_csvs(
-                parse_folder_to_channel_dfs(
-                    os.path.join(args.folder, f'00{subject_id}-3YK9K1J2D2/raw_data/v6')
-                ), 
-                out_dir=os.path.join(args.out_dir, f'00{subject_id}'), 
-                prefix=f'00{subject_id}'
-            )
- """

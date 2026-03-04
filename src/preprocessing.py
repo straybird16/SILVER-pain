@@ -72,7 +72,7 @@ class MergeConfig:
     hr_max_bpm: float = 220.0
     hr_mad_z: float = 3.0            # robust spike rejection on instantaneous HR
     
-    # HR from HR.csv (Empatica)
+    # HR from HR.csv (Empatica E4)
     hr_map_method: str = "interp"          # "snap" or "interp"
     hr_map_interp_kind: str = "cubic"      # "linear" / "quadratic" / "cubic"
     
@@ -292,10 +292,6 @@ def _kubios_auto_detect(rr: np.ndarray, cfg:MergeConfig) -> Dict[str, np.ndarray
         jp1 = j + 1
         if jm1 < 0 or jp1 >= n:
             continue
-        """ if S11[j] > 0:
-            S12[j] = np.nanmax([dRR[jm1], dRR[jp1]])
-        else:
-            S12[j] = np.nanmin([dRR[jm1], dRR[jp1]]) """
         vals = np.array([dRR[jm1], dRR[jp1]], dtype=float)
         if not np.any(np.isfinite(vals)):
             continue
@@ -319,10 +315,6 @@ def _kubios_auto_detect(rr: np.ndarray, cfg:MergeConfig) -> Dict[str, np.ndarray
         jp2 = j + 2
         if jp2 >= n or not np.isfinite(S21[j]):
             continue
-        """ if S21[j] >= 0:
-            S22[j] = np.nanmin([dRR[jp1], dRR[jp2]])
-        else:
-            S22[j] = np.nanmax([dRR[jp1], dRR[jp2]]) """
         vals = np.array([dRR[jp1], dRR[jp2]], dtype=float)
         if not np.any(np.isfinite(vals)):
             continue
@@ -406,18 +398,17 @@ def read_channel_csv(subject_dir: str, subject_id: str, channel: str) -> Optiona
 
 
 def ensure_sorted_unique_times(t_ns: np.ndarray, v: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Sort by time and drop duplicate timestamps keeping the last."""
+    """Sort timestamps and keep only the last value for each duplicate timestamp."""
     order = np.argsort(t_ns, kind="mergesort")
     t = t_ns[order]
     vv = v[order]
     if t.size == 0:
         return t, vv
-    # keep last occurrence
-    _, idx_last = np.unique(t, return_index=False), None
-    # implement keep-last by reversing unique
+
+    # Keep-last duplicate handling via reverse unique.
     t_rev = t[::-1]
     vv_rev = vv[::-1]
-    t_u_rev, uidx_rev = np.unique(t_rev, return_index=True)
+    _, uidx_rev = np.unique(t_rev, return_index=True)
     keep_rev = uidx_rev
     keep = (t.size - 1 - keep_rev)
     keep.sort()
@@ -630,66 +621,107 @@ def map_scalar_channel_to_grid(
 # ----------------------------
 # Peaks -> HR
 # ----------------------------
-def robust_filter_hr(t_ns: np.ndarray, hr: np.ndarray, cfg: MergeConfig) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Outlier filter on instantaneous HR:
-      - hard bpm bounds
-      - MAD-based spike rejection
-    """
-    """ m = np.isfinite(hr)
-    m &= (hr >= cfg.hr_min_bpm) & (hr <= cfg.hr_max_bpm)
-    t_ns = t_ns[m]
-    hr = hr[m]
-    if hr.size < 5:
-        return t_ns, hr
-
-    med = np.median(hr)
-    mad = np.median(np.abs(hr - med))
+def _fallback_global_hr_filter(
+    t_ns: np.ndarray,
+    hr: np.ndarray,
+    hr_min_bpm: float,
+    hr_max_bpm: float,
+    hr_mad_z: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Legacy fallback for unsupported input shape: direct global HR outlier filter."""
+    m = np.isfinite(hr)
+    m &= (hr >= hr_min_bpm) & (hr <= hr_max_bpm)
+    t0 = t_ns[m]
+    h0 = hr[m]
+    if h0.size < 5:
+        return t0, h0
+    med = np.median(h0)
+    mad = np.median(np.abs(h0 - med))
     if mad <= 1e-9:
-        return t_ns, hr
-    z = np.abs(hr - med) / (1.4826 * mad) # z score of MAD
-    keep = z <= cfg.hr_mad_z
-    return t_ns[keep], hr[keep] """
-    #----------------------------------------
-    """
-    Robust peaks/RR -> HR correction pipeline (Kubios-like) with optional 1Hz resampling.
+        return t0, h0
+    z = np.abs(h0 - med) / (1.4826 * mad)
+    keep = z <= hr_mad_z
+    return t0[keep], h0[keep]
 
-    Input conventions (auto-detected):
-      1. If len(t_ns) == len(hr) + 1: t_ns are PEAK timestamps (ns); hr is ignored/recomputed.
-      2. Else if len(t_ns) == len(hr): treat (t_ns, hr) as instantaneous HR samples; RR is derived as 60/hr
-        (note: missed/extra peak editing cannot be done without peak timestamps).
-      3. Else: fall back to original behavior (HR-only global filter).
-      
-      Note that 1. and 2. are essentially the same if (before this function) hr are computed from t_ns,
-        and t_ns[1:] and hr are provided
 
-    Returns:
-      - If cfg.hr_resample_hz is None: returns irregular instantaneous HR samples (t_ns_hr, hr_inst).
-      - Else: returns uniform grid (t_ns_grid, hr_grid) at cfg.hr_resample_hz (default 1.0).
-    """
-    # ----------------------------
-    # Defaults / config accessors
-    # ----------------------------
-    hr_min_bpm = float(getattr(cfg, "hr_min_bpm", 30.0))
-    hr_max_bpm = float(getattr(cfg, "hr_max_bpm", 220.0))
-    hr_mad_z   = float(getattr(cfg, "hr_mad_z", 5.0))
+def _build_rr_series(
+    t_ns: np.ndarray,
+    hr: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, bool, bool, Optional[np.ndarray]]:
+    """Build RR interval series from peak times or instantaneous HR samples."""
+    have_peaks = (hr.size + 1 == t_ns.size)
+    have_hr_samples = (hr.size == t_ns.size)
 
-    rr_min = 60.0 / hr_max_bpm
-    rr_max = 60.0 / hr_min_bpm
+    if have_peaks:
+        peaks_s = t_ns.astype(np.float64) * 1e-9
+        rr = np.diff(peaks_s)
+        rr_t_s = peaks_s[1:]
+        return rr_t_s, rr.astype(float), True, True, peaks_s
 
-    enable_auto = bool(getattr(cfg, "enable_kubios_auto", True))
-    enable_thresh = bool(getattr(cfg, "enable_kubios_threshold", True))
+    if have_hr_samples:
+        rr_t_s = t_ns.astype(np.float64) * 1e-9
+        rr = 60.0 / np.where(np.isfinite(hr) & (hr > 1e-9), hr, np.nan)
+        return rr_t_s, rr.astype(float), False, True, None
 
-    # Step A
-    enable_ratio = bool(getattr(cfg, "enable_rr_ratio_median", True))
-    ratio_win = int(getattr(cfg, "rr_ratio_win_beats", 11))
-    ratio_thr = float(getattr(cfg, "rr_ratio_thr", 0.25))
+    return np.array([], dtype=float), np.array([], dtype=float), False, False, None
 
-    enable_hampel = bool(getattr(cfg, "enable_rr_hampel", True))
-    hampel_win = int(getattr(cfg, "rr_hampel_win_beats", 11))
-    hampel_k = float(getattr(cfg, "rr_hampel_k", 3.0))
 
-    # Step B (Kubios threshold correction)
+def _apply_kubios_auto_stage(
+    rr_t_s: np.ndarray,
+    rr: np.ndarray,
+    cfg: MergeConfig,
+    rr_min: float,
+    rr_max: float,
+    have_peaks: bool,
+    peaks_s: Optional[np.ndarray],
+    auto_edit_peaks: bool,
+    auto_interp_kind: str,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Apply Kubios automatic detection, optional peak editing, and interpolation."""
+    if rr.size < 10 or not bool(getattr(cfg, "enable_kubios_auto", True)):
+        return rr_t_s, rr
+
+    det = _kubios_auto_detect(rr, cfg)
+
+    if have_peaks and auto_edit_peaks and peaks_s is not None:
+        extra_idx = np.where(det["extra"])[0]
+        missed_idx = np.where(det["missed"])[0]
+
+        remove_peak_idx = set()
+        for j in extra_idx:
+            k = j + 1
+            if 0 < k < peaks_s.size - 1:
+                remove_peak_idx.add(k)
+        if remove_peak_idx:
+            keep = np.ones(peaks_s.size, dtype=bool)
+            keep[list(remove_peak_idx)] = False
+            peaks_s = peaks_s[keep]
+
+        if missed_idx.size > 0:
+            rr_tmp = np.diff(peaks_s)
+            inserts = []
+            for j in missed_idx:
+                if 0 <= j < rr_tmp.size:
+                    inserts.append(0.5 * (peaks_s[j] + peaks_s[j + 1]))
+            if inserts:
+                peaks_s = np.sort(np.concatenate([peaks_s, np.asarray(inserts, dtype=float)]))
+
+        rr = np.diff(peaks_s).astype(float)
+        rr_t_s = peaks_s[1:]
+        rr[(rr < rr_min) | (rr > rr_max)] = np.nan
+        det = _kubios_auto_detect(rr, cfg)
+
+    bad_auto = det["ectopic"] | det["longshort_only"]
+    if bad_auto.any():
+        rr2 = rr.copy()
+        rr2[bad_auto] = np.nan
+        rr = _interp_fill(rr_t_s, rr2, kind=auto_interp_kind)
+
+    return rr_t_s, rr
+
+
+def _apply_rr_correction_stages(rr_t_s: np.ndarray, rr: np.ndarray, cfg: MergeConfig) -> np.ndarray:
+    """Apply Kubios threshold and robust local RR correction stages."""
     kubios_level = str(getattr(cfg, "kubios_threshold_level", "medium")).lower()
     kubios_level_map = {
         "very_low": 0.45,
@@ -697,169 +729,53 @@ def robust_filter_hr(t_ns: np.ndarray, hr: np.ndarray, cfg: MergeConfig) -> Tupl
         "medium": 0.25,
         "strong": 0.15,
         "very_strong": 0.05,
-    }  # seconds @ 60 bpm : 
+    }
     thr_60 = float(getattr(cfg, "kubios_threshold_sec_60bpm", None) or kubios_level_map.get(kubios_level, 0.25))
     thr_win_med = int(getattr(cfg, "kubios_threshold_med_win", 11))
     thr_scale_by_mean_rr = bool(getattr(cfg, "kubios_threshold_scale_by_mean_rr", True))
     thr_interp_kind = str(getattr(cfg, "kubios_threshold_interp_kind", "cubic"))
 
-    # Step C (Kubios auto)
-    auto_edit_peaks = bool(getattr(cfg, "kubios_auto_edit_peaks", True))
-    auto_interp_kind = str(getattr(cfg, "kubios_auto_interp_kind", "cubic"))
-
-    # Step D (optional resample HR)
-    hr_resample_hz = getattr(cfg, "hr_resample_hz", 1.0)  # None or float
-    hr_interp_kind = str(getattr(cfg, "hr_interp_kind", "cubic"))
-    enable_gauss = bool(getattr(cfg, "enable_hr_gaussian", False))  # default OFF 
-    gauss_sigma_s = float(getattr(cfg, "hr_gaussian_sigma_s", 1.5))
-
-    final_outlier_action = str(getattr(cfg, "final_outlier_action", "drop")).lower()  # drop|interpolate|nan
-
-    # ----------------------------
-    # Detect input mode
-    # ----------------------------
-    t_ns = np.asarray(t_ns)
-    hr = np.asarray(hr)
-
-    if t_ns.size < 3:
-        return t_ns, hr
-
-    # Ensure sorted unique times
-    order = np.argsort(t_ns)
-    t_ns = t_ns[order]
-    if hr.size == t_ns.size:
-        hr = hr[order]
-    t_ns = t_ns.astype(np.int64)
-
-    # Mode 1: we have peak times (best)
-    have_peaks = (hr.size + 1 == t_ns.size)
-
-    # Mode 2: HR samples only
-    have_hr_samples = (hr.size == t_ns.size)
-
-    # Fallback: unknown
-    if not have_peaks and not have_hr_samples:
-        # original behavior: HR-only global filter
-        m = np.isfinite(hr)
-        m &= (hr >= hr_min_bpm) & (hr <= hr_max_bpm)
-        t0 = t_ns[m]; h0 = hr[m]
-        if h0.size < 5:
-            return t0, h0
-        med = np.median(h0)
-        mad = np.median(np.abs(h0 - med))
-        if mad <= 1e-9:
-            return t0, h0
-        z = np.abs(h0 - med) / (1.4826 * mad)
-        keep = z <= hr_mad_z
-        return t0[keep], h0[keep]
-
-    # ----------------------------
-    # Build RR series
-    # ----------------------------
-    if have_peaks:
-        peaks_ns = t_ns
-        peaks_s = peaks_ns.astype(np.float64) * 1e-9
-        rr = np.diff(peaks_s)  # seconds
-        rr_t_s = peaks_s[1:]   # assign RR/HR to the ending peak time
-    else:
-        # HR samples only; derive RR (cannot edit peaks)
-        # Guard divide by zero
-        rr_t_s = t_ns.astype(np.float64) * 1e-9
-        rr = 60.0 / np.where(np.isfinite(hr) & (hr > 1e-9), hr, np.nan)
-
-    # Hard bounds on RR
-    rr = rr.astype(float)
-    rr[(rr < rr_min) | (rr > rr_max)] = np.nan
-
-    # ----------------------------
-    # Step C: Kubios Automatic (Lipponen & Tarvainen, 2019)
-    # ----------------------------
-    if enable_auto and rr.size >= 10:
-        det = _kubios_auto_detect(rr, cfg)
-
-        if have_peaks and auto_edit_peaks:
-            # Apply missed/extra edits at the PEAK level (best fidelity).
-            # extra[j] => remove peak at index (j+1) to merge RR[j] and RR[j+1]
-            # missed[j] => insert peak at midpoint between peak[j] and peak[j+1]
-            extra_idx = np.where(det["extra"])[0]
-            missed_idx = np.where(det["missed"])[0]
-
-            # remove peaks (descending to keep indices valid)
-            remove_peak_idx = set()
-            for j in extra_idx:
-                k = j + 1
-                if 0 < k < peaks_s.size - 1:  # don't remove endpoints
-                    remove_peak_idx.add(k)
-            if remove_peak_idx:
-                keep = np.ones(peaks_s.size, dtype=bool)
-                keep[list(remove_peak_idx)] = False
-                peaks_s = peaks_s[keep]
-
-            # insert peaks (ascending in time)
-            if missed_idx.size > 0:
-                # recompute RR after removals before inserting midpoints
-                rr_tmp = np.diff(peaks_s)
-                # map missed indices conservatively: only insert where index still valid
-                inserts = []
-                for j in missed_idx:
-                    if 0 <= j < rr_tmp.size:
-                        mid = 0.5 * (peaks_s[j] + peaks_s[j + 1])
-                        inserts.append(mid)
-                if inserts:
-                    peaks_s = np.sort(np.concatenate([peaks_s, np.array(inserts, dtype=float)]))
-
-            # Recompute RR after editing peaks
-            rr = np.diff(peaks_s)
-            rr_t_s = peaks_s[1:]
-            rr[(rr < rr_min) | (rr > rr_max)] = np.nan
-
-            # Re-run detection once to get ectopic/longshort flags on the edited series, then interpolate those
-            det = _kubios_auto_detect(rr, cfg)
-
-        # Interpolate ectopic + long/short-only beats (per paper in Lipponen & Tarvainen) 
-        bad_auto = det["ectopic"] | det["longshort_only"]
-        if bad_auto.any():
-            rr2 = rr.copy()
-            rr2[bad_auto] = np.nan
-            rr = _interp_fill(rr_t_s, rr2, kind=auto_interp_kind)
-
-    # ----------------------------
-    # Step B: Kubios Threshold correction
-    # ----------------------------
-    if enable_thresh and rr.size >= 5:
+    if bool(getattr(cfg, "enable_kubios_threshold", True)) and rr.size >= 5:
         bad_thr = _kubios_threshold_mark(rr, thr_win_med, thr_60, thr_scale_by_mean_rr)
         if bad_thr.any():
             rr2 = rr.copy()
             rr2[bad_thr] = np.nan
             rr = _interp_fill(rr_t_s, rr2, kind=thr_interp_kind)
 
-    # ----------------------------
-    # Step A: Robust local outlier marking (ratio-to-median and/or Hampel)
-    # ----------------------------
-    bad_A = np.zeros(rr.size, dtype=bool)
+    enable_ratio = bool(getattr(cfg, "enable_rr_ratio_median", True))
+    ratio_win = int(getattr(cfg, "rr_ratio_win_beats", 11))
+    ratio_thr = float(getattr(cfg, "rr_ratio_thr", 0.25))
+    enable_hampel = bool(getattr(cfg, "enable_rr_hampel", True))
+    hampel_win = int(getattr(cfg, "rr_hampel_win_beats", 11))
+    hampel_k = float(getattr(cfg, "rr_hampel_k", 3.0))
+
+    bad_rr = np.zeros(rr.size, dtype=bool)
     if enable_ratio and rr.size >= 5:
-        bad_A |= _mark_by_ratio_to_local_median(rr, ratio_win, ratio_thr)
+        bad_rr |= _mark_by_ratio_to_local_median(rr, ratio_win, ratio_thr)
     if enable_hampel and rr.size >= 7:
-        bad_A |= _mark_by_hampel(rr, hampel_win, hampel_k)
+        bad_rr |= _mark_by_hampel(rr, hampel_win, hampel_k)
 
-    if bad_A.any():
+    if bad_rr.any():
         rr2 = rr.copy()
-        rr2[bad_A] = np.nan
-        rr = _interp_fill(rr_t_s, rr2, kind="linear")  # conservative fill for A
+        rr2[bad_rr] = np.nan
+        rr = _interp_fill(rr_t_s, rr2, kind="linear")
 
-    # Final hard bounds again (post interpolation)
-    rr[(rr < rr_min) | (rr > rr_max)] = np.nan
+    return rr
 
-    # ----------------------------
-    # RR -> instantaneous HR (irregular)
-    # ----------------------------
+
+def _finalize_hr_and_resample(
+    rr_t_s: np.ndarray,
+    rr: np.ndarray,
+    cfg: MergeConfig,
+    hr_min_bpm: float,
+    hr_max_bpm: float,
+    hr_mad_z: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Convert RR to HR, apply final outlier cleanup, and optionally resample."""
     hr_inst = 60.0 / rr
     t_hr_s = rr_t_s
     t_hr_ns = (t_hr_s * 1e9).astype(np.int64)
 
-    # ----------------------------
-    # Final global HR outlier cleanup
-    # ----------------------------
     m = np.isfinite(hr_inst) & (hr_inst >= hr_min_bpm) & (hr_inst <= hr_max_bpm)
     if m.sum() >= 5:
         h0 = hr_inst[m]
@@ -869,6 +785,7 @@ def robust_filter_hr(t_ns: np.ndarray, hr: np.ndarray, cfg: MergeConfig) -> Tupl
             z = np.abs(hr_inst - med) / (1.4826 * mad)
             m &= (z <= hr_mad_z)
 
+    final_outlier_action = str(getattr(cfg, "final_outlier_action", "drop")).lower()
     if final_outlier_action == "nan":
         hr_inst = hr_inst.copy()
         hr_inst[~m] = np.nan
@@ -877,14 +794,12 @@ def robust_filter_hr(t_ns: np.ndarray, hr: np.ndarray, cfg: MergeConfig) -> Tupl
         hr2[~m] = np.nan
         hr_inst = _interp_fill(t_hr_s, hr2, kind="linear")
         m = np.isfinite(hr_inst)
-    else:  # "drop" (default)
+    else:
         t_hr_ns = t_hr_ns[m]
         t_hr_s = t_hr_s[m]
         hr_inst = hr_inst[m]
 
-    # ----------------------------
-    # Step D: Optional resample to uniform grid (e.g., 1 Hz) + optional Gaussian smoothing
-    # ----------------------------
+    hr_resample_hz = getattr(cfg, "hr_resample_hz", 1.0)
     if hr_resample_hz is None:
         return t_hr_ns, hr_inst
 
@@ -892,8 +807,6 @@ def robust_filter_hr(t_ns: np.ndarray, hr: np.ndarray, cfg: MergeConfig) -> Tupl
 
     hz = float(hr_resample_hz) if float(hr_resample_hz) > 0 else 1.0
     dt = 1.0 / hz
-
-    # Define grid within available time support (no extrapolation)
     if t_hr_s.size < 2:
         return t_hr_ns, hr_inst
 
@@ -902,27 +815,88 @@ def robust_filter_hr(t_ns: np.ndarray, hr: np.ndarray, cfg: MergeConfig) -> Tupl
     if t1 <= t0:
         return t_hr_ns, hr_inst
 
+    hr_interp_kind = str(getattr(cfg, "hr_interp_kind", "cubic"))
     grid_s = np.arange(t0, t1 + 0.5 * dt, dt)
-    f = interp1d(t_hr_s, hr_inst, kind=hr_interp_kind if hr_inst.size >= 4 else "linear",
-                 bounds_error=False, fill_value=np.nan, assume_sorted=True)
+    f = interp1d(
+        t_hr_s,
+        hr_inst,
+        kind=hr_interp_kind if hr_inst.size >= 4 else "linear",
+        bounds_error=False,
+        fill_value=np.nan,
+        assume_sorted=True,
+    )
     hr_grid = f(grid_s)
 
+    enable_gauss = bool(getattr(cfg, "enable_hr_gaussian", False))
+    gauss_sigma_s = float(getattr(cfg, "hr_gaussian_sigma_s", 1.5))
     if enable_gauss:
-        # Gaussian smoothing on uniform grid (OFF by default to avoid smearing)
         from scipy.ndimage import gaussian_filter1d
+
         sigma = max(0.0, gauss_sigma_s) / dt
         if sigma > 0:
-            # only smooth finite segments
             finite = np.isfinite(hr_grid)
             if finite.any():
-                x = hr_grid.copy()
-                # fill NaNs by linear interp for smoothing, then restore NaNs
-                x = _interp_fill(grid_s, x, kind="linear")
+                x = _interp_fill(grid_s, hr_grid.copy(), kind="linear")
                 x = gaussian_filter1d(x, sigma=sigma, mode="nearest")
                 hr_grid[finite] = x[finite]
 
     grid_ns = (grid_s * 1e9).astype(np.int64)
     return grid_ns, hr_grid
+
+
+def robust_filter_hr(t_ns: np.ndarray, hr: np.ndarray, cfg: MergeConfig) -> Tuple[np.ndarray, np.ndarray]:
+    """Run the RR/HR artifact-correction pipeline and return filtered HR series.
+
+    This function supports two input modes:
+    1. Peak-timestamp mode: `len(t_ns) == len(hr) + 1` and HR is recomputed from peaks.
+    2. Instantaneous-HR mode: `len(t_ns) == len(hr)` and RR is derived as `60 / hr`.
+
+    Processing stages (when enabled in `cfg`) are:
+    1. Kubios automatic detection with optional missed/extra peak editing.
+    2. Kubios threshold correction.
+    3. Local robust RR outlier correction (ratio/Hampel).
+    4. Final global HR outlier cleanup and optional uniform resampling.
+    """
+    t_ns = np.asarray(t_ns)
+    hr = np.asarray(hr)
+    if t_ns.size < 3:
+        return t_ns, hr
+
+    order = np.argsort(t_ns)
+    t_ns = t_ns[order].astype(np.int64)
+    if hr.size == t_ns.size:
+        hr = hr[order]
+
+    hr_min_bpm = float(getattr(cfg, "hr_min_bpm", 30.0))
+    hr_max_bpm = float(getattr(cfg, "hr_max_bpm", 220.0))
+    hr_mad_z = float(getattr(cfg, "hr_mad_z", 5.0))
+    rr_min = 60.0 / hr_max_bpm
+    rr_max = 60.0 / hr_min_bpm
+
+    rr_t_s, rr, have_peaks, valid_mode, peaks_s = _build_rr_series(t_ns, hr)
+    if not valid_mode:
+        return _fallback_global_hr_filter(t_ns, hr, hr_min_bpm, hr_max_bpm, hr_mad_z)
+
+    rr[(rr < rr_min) | (rr > rr_max)] = np.nan
+
+    auto_edit_peaks = bool(getattr(cfg, "kubios_auto_edit_peaks", True))
+    auto_interp_kind = str(getattr(cfg, "kubios_auto_interp_kind", "cubic"))
+    rr_t_s, rr = _apply_kubios_auto_stage(
+        rr_t_s,
+        rr,
+        cfg,
+        rr_min,
+        rr_max,
+        have_peaks,
+        peaks_s,
+        auto_edit_peaks,
+        auto_interp_kind,
+    )
+
+    rr = _apply_rr_correction_stages(rr_t_s, rr, cfg)
+    rr[(rr < rr_min) | (rr > rr_max)] = np.nan
+
+    return _finalize_hr_and_resample(rr_t_s, rr, cfg, hr_min_bpm, hr_max_bpm, hr_mad_z)
 
 
 def bandpass_filter_64hz(x: np.ndarray, cfg: MergeConfig) -> np.ndarray:
@@ -1398,76 +1372,6 @@ def build_empatica_session_merged_df(subject_dir: str, subject_id: str, cfg: Mer
     return merged
 
 
-def load_pain_data_csv(subject_dir: str, cfg: MergeConfig) -> Optional[pd.DataFrame]:
-    """
-    pain_data.csv has NO header:
-      local_timestamp, pain_level, subject_id
-    Timestamps are local ET (EDT/EST), convert to UTC ns.
-    """
-    path = _find_file_ci(subject_dir, ["pain_data.csv"])
-    if path is None:
-        return None
-
-    p = pd.read_csv(path, header=None, names=["timestamp_local", "PainLevel", "subject_id"])
-    p["PainLevel"] = pd.to_numeric(p["PainLevel"], errors="coerce")
-
-    t_local = pd.to_datetime(p["timestamp_local"], errors="coerce")
-    tz = getattr(cfg, "pain_tz", "America/New_York")
-    t_utc = (t_local
-             .dt.tz_localize(tz, ambiguous="infer", nonexistent="shift_forward")
-             .dt.tz_convert("UTC"))
-
-    p["timestamp_utc"] = t_utc
-    p["timestamp_ns"] = p["timestamp_utc"].astype("int64")
-    return p
-
-
-def _nearest_index_with_distance(target_ns: np.ndarray, grid_ns: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Returns (nearest_idx, distance_ns) for each target.
-    """
-    idx = np.searchsorted(grid_ns, target_ns, side="left")
-    idx0 = np.clip(idx - 1, 0, grid_ns.size - 1)
-    idx1 = np.clip(idx,     0, grid_ns.size - 1)
-
-    d0 = np.abs(target_ns - grid_ns[idx0])
-    d1 = np.abs(target_ns - grid_ns[idx1])
-    pick = np.where(d1 < d0, idx1, idx0)
-    dist = np.where(d1 < d0, d1, d0)
-    return pick, dist
-
-
-def join_pain_to_merged_df(merged: pd.DataFrame, pain: pd.DataFrame, cfg: MergeConfig) -> pd.DataFrame:
-    """
-    Snap each pain row to ONE nearest physio row (no interpolation).
-    Adds PainLevel column (sparse by default).
-    """
-    out = merged.sort_values("timestamp_ns", kind="mergesort").reset_index(drop=True)
-    grid_ns = out["timestamp_ns"].to_numpy(np.int64)
-
-    out["PainLevel"] = np.nan
-
-    if pain is None or pain.empty:
-        return out
-
-    pain_valid = pain[pain["PainLevel"].notna()].copy()
-    if pain_valid.empty:
-        return out
-
-    t_ns = pain_valid["timestamp_ns"].to_numpy(np.int64)
-    idx, dist_ns = _nearest_index_with_distance(t_ns, grid_ns)
-
-    max_snap_s = float(getattr(cfg, "pain_max_snap_s", -1.0))
-    if max_snap_s > 0:
-        keep = (dist_ns.astype(np.float64) / 1e9) <= max_snap_s
-        idx = idx[keep]
-        pain_valid = pain_valid.iloc[np.where(keep)[0]]
-
-    out.loc[idx, "PainLevel"] = pain_valid["PainLevel"].to_numpy(dtype=np.float64)
-    return out
-
-
-
 def process_empatica_e4_physio_all_subjects(root: str, out_dir: str, cfg: MergeConfig) -> None:
     """
     Merge Empatica E4 exports (BVP/EDA/TEMP/HR) onto a BVP-native 64 Hz grid.
@@ -1508,32 +1412,4 @@ def process_empatica_e4_physio_all_subjects(root: str, out_dir: str, cfg: MergeC
         merged = build_empatica_session_merged_df(sd, subject_id, cfg)
         out_path = os.path.join(out_dir, f"{subject_id}_merged_64hz.csv")
         merged.to_csv(out_path, index=False)
-        print(f"[OK] {subject_id} -> {out_path}")
-
-
-def process_empatica_e4_all_subjects(root: str, out_dir: str, cfg: MergeConfig):
-    """
-    Expects:
-      root/
-        101/
-          EDA.csv, BVP.csv, HR.csv, TEMP.csv, pain_data.csv, ...
-        102/
-          ...
-    Writes:
-      out_dir/101_merged_64hz_with_pain.csv
-    """
-    subj_dirs = [d for d in glob.glob(os.path.join(root, "*")) if os.path.isdir(d)]
-    subj_dirs.sort()
-
-    os.makedirs(out_dir, exist_ok=True)
-
-    for sd in subj_dirs:
-        subject_id = os.path.basename(sd)
-
-        merged = build_empatica_session_merged_df(sd, subject_id, cfg)
-        pain = load_pain_data_csv(sd, cfg)
-        merged2 = join_pain_to_merged_df(merged, pain, cfg)
-
-        out_path = os.path.join(out_dir, f"{subject_id}_merged_64hz_with_pain.csv")
-        merged2.to_csv(out_path, index=False)
         print(f"[OK] {subject_id} -> {out_path}")
