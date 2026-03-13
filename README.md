@@ -140,6 +140,13 @@ For cohort-specific details:
 
 ### Option B: Re-run preprocessing pipelines
 
+Install dependencies and the local package first:
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
+
 Run end-to-end cohort pipelines:
 
 ```bash
@@ -158,10 +165,12 @@ python process_older_adults_data.py --config-preset custom
 
 ```text
 .
+├── pyproject.toml
 ├── src/
-│   ├── extraction.py
-│   ├── preprocessing.py
-│   └── merge.py
+│   └── silver_pain/
+│       ├── extraction.py
+│       ├── preprocessing.py
+│       └── merge.py
 ├── config/
 │   └── preprocessing.py
 ├── data/
