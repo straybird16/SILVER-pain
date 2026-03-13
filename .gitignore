@@ -13,5 +13,6 @@ plots/
 # local config fils
 *pycache*
 *.DS_Store*
+*.egg-info/
 # archived files and miscellany
 *archive*/
