@@ -1,5 +1,5 @@
 """
-src.merge
+silver_pain.merge
 
 Utilities to merge self-report pain annotations with merged physiological time series.
 

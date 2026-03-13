@@ -1,4 +1,4 @@
-"""src.preprocessing
+"""silver_pain.preprocessing
 
 Preprocessing and time-alignment utilities for SILVER-Pain physiological signals.
 
@@ -1377,7 +1377,7 @@ def process_empatica_e4_physio_all_subjects(root: str, out_dir: str, cfg: MergeC
     Merge Empatica E4 exports (BVP/EDA/TEMP/HR) onto a BVP-native 64 Hz grid.
 
     This produces per-subject physiological files *without* self-report labels. Use
-    `src.merge.batch_join_subject_folders` to snap `pain_data.csv` (or another
+    `silver_pain.merge.batch_join_subject_folders` to snap `pain_data.csv` (or another
     self-report file) onto the resulting grid.
 
     Expected input layout

@@ -2,7 +2,7 @@
 Default and custom configurations of preprocessing raw data streams.
 """
 
-from src.preprocessing import MergeConfig
+from silver_pain.preprocessing import MergeConfig
 
 default_merge_config_older_adults = MergeConfig(
     map_method="snap",  # "snap" or "interp"

@@ -10,8 +10,8 @@ from config.preprocessing import (
     custom_merge_config_young_adults,
     default_merge_config_young_adults,
 )
-from src.merge import join_self_report_to_physio
-from src.preprocessing import (
+from silver_pain.merge import join_self_report_to_physio
+from silver_pain.preprocessing import (
     SCIPY_OK,
     build_empatica_session_merged_df,
     process_empatica_e4_physio_all_subjects,

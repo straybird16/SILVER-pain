@@ -11,8 +11,8 @@ from config.preprocessing import (
     custom_merge_config_older_adults,
     default_merge_config_older_adults,
 )
-from src.merge import join_self_report_to_physio
-from src.preprocessing import SCIPY_OK, process_all_subjects, process_subject
+from silver_pain.merge import join_self_report_to_physio
+from silver_pain.preprocessing import SCIPY_OK, process_all_subjects, process_subject
 
 
 def parse_subjects(raw_values: list[str] | None) -> list[str] | None:
@@ -75,7 +75,7 @@ def discover_subjects(physio_root: Path) -> list[str]:
 
 
 def extract_subjects(physio_root: Path, extraction_output_dir: Path, subjects: list[str]) -> None:
-    from src.extraction import parse_folder_to_channel_dfs, write_channel_csvs
+    from silver_pain.extraction import parse_folder_to_channel_dfs, write_channel_csvs
 
     extraction_output_dir.mkdir(parents=True, exist_ok=True)
     for subject_id in subjects:
